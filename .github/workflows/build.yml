@@ -20,6 +20,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # workspace 配置使 cargo 把产物输出到仓库根 target/，而非 src-tauri/target/
+  RELEASE_DIR: target/release
 
 jobs:
   lint:
@@ -86,7 +88,7 @@ jobs:
           # back to devUrl http://localhost:65173 and shows "connection
           # refused" when double-clicked. The embedded dist JS chunk must be
           # present inside the binary.
-          $releaseDir = "src-tauri/target/release"
+          $releaseDir = "$env:RELEASE_DIR"
           # Tauri 2 产物名跟 [[bin]].name (claude-pet) 一致；productName (ClaudePet)
           # 仅用于 bundle 内的重命名。优先找 claude-pet.exe，找不到则兜底找
           # release 目录下唯一的非 pdb/webview2 exe。
@@ -118,14 +120,14 @@ jobs:
           echo "version=$version" >> $env:GITHUB_OUTPUT
 
           # NSIS installer
-          $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1 -ExpandProperty FullName
+          $nsis = Get-ChildItem $env:RELEASE_DIR/bundle/nsis/*.exe | Select-Object -First 1 -ExpandProperty FullName
           if (-not $nsis) { throw "NSIS installer not found under bundle/nsis/" }
           echo "nsis=$nsis" >> $env:GITHUB_OUTPUT
 
           # Release exe（由 verify 步骤已定位并输出，复用避免重复查找）
           $exe = "${{ steps.verify.outputs.exe }}"
           if (-not $exe) {
-            $exe = (Get-ChildItem -Path "src-tauri/target/release" -Filter "claude-pet.exe" -File | Select-Object -First 1).FullName
+            $exe = (Get-ChildItem -Path $env:RELEASE_DIR -Filter "claude-pet.exe" -File | Select-Object -First 1).FullName
           }
           echo "exe=$exe" >> $env:GITHUB_OUTPUT
 
@@ -134,7 +136,7 @@ jobs:
         run: |
           $version = "${{ steps.artifacts.outputs.version }}"
           $zipName = "ClaudePet-$version-x64-portable.zip"
-          $zipPath = "src-tauri/target/release/$zipName"
+          $zipPath = "$env:RELEASE_DIR/$zipName"
 
           # Build the zip manifest filter for exe + pet/ dir.
           # We need to add the pet/ folder content while preserving the directory
