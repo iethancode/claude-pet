@@ -78,6 +78,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Verify embedded frontend (custom-protocol guard)
+        id: verify
         shell: pwsh
         run: |
           # Guard against a regression where the build step is changed to a
@@ -85,14 +86,29 @@ jobs:
           # back to devUrl http://localhost:65173 and shows "connection
           # refused" when double-clicked. The embedded dist JS chunk must be
           # present inside the binary.
-          $exe = "src-tauri/target/release/claude-pet.exe"
-          if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
-          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $releaseDir = "src-tauri/target/release"
+          # Tauri 2 产物名跟 [[bin]].name (claude-pet) 一致；productName (ClaudePet)
+          # 仅用于 bundle 内的重命名。优先找 claude-pet.exe，找不到则兜底找
+          # release 目录下唯一的非 pdb/webview2 exe。
+          $exe = Get-ChildItem -Path $releaseDir -Filter "claude-pet.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path $releaseDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -notmatch 'Webview2|Bootstrapper' } |
+                   Select-Object -First 1
+          }
+          if (-not $exe) {
+            Write-Host "=== $releaseDir 下的 exe 文件 ==="
+            Get-ChildItem -Path $releaseDir -Filter "*.exe" -File -ErrorAction SilentlyContinue | Format-Table Name,Length
+            throw "exe not found in $releaseDir — build may not have produced a binary. See listing above."
+          }
+          Write-Host "Verifying: $($exe.FullName)"
+          $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
           if ($text -notmatch 'index-[A-Za-z0-9_-]+\.js') {
             throw "dist not embedded in exe — build likely ran without custom-protocol feature (pnpm tauri build adds it automatically). Pet windows would fail with 'localhost connection refused'."
           }
           Write-Host "OK: dist embedded in exe"
+          echo "exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Locate artifacts
         id: artifacts
@@ -103,10 +119,14 @@ jobs:
 
           # NSIS installer
           $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $nsis) { throw "NSIS installer not found under bundle/nsis/" }
           echo "nsis=$nsis" >> $env:GITHUB_OUTPUT
 
-          # Release exe
-          $exe = "src-tauri/target/release/claude-pet.exe"
+          # Release exe（由 verify 步骤已定位并输出，复用避免重复查找）
+          $exe = "${{ steps.verify.outputs.exe }}"
+          if (-not $exe) {
+            $exe = (Get-ChildItem -Path "src-tauri/target/release" -Filter "claude-pet.exe" -File | Select-Object -First 1).FullName
+          }
           echo "exe=$exe" >> $env:GITHUB_OUTPUT
 
       - name: Create portable zip
@@ -121,7 +141,9 @@ jobs:
           # layout: unzip → claude-pet.exe + pet/<id>/* next to each other.
           $tmpDir = "${{ runner.temp }}/portable"
           New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-          Copy-Item src-tauri/target/release/claude-pet.exe $tmpDir
+          $exe = "${{ steps.artifacts.outputs.exe }}"
+          if (-not (Test-Path $exe)) { throw "exe not found for portable zip: $exe" }
+          Copy-Item $exe $tmpDir
           Copy-Item -Recurse pet $tmpDir
 
           Compress-Archive -Path "$tmpDir/*" -DestinationPath $zipPath -Force
