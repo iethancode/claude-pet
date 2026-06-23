@@ -1,0 +1,169 @@
+# Build & Release Automation
+#
+# Triggers:
+#   push/PR to main  → build + lint check
+#   tag v*            → build + create GitHub Release with artifacts
+#
+# Artifacts per release:
+#   ClaudePet-<version>-x64-setup.exe   NSIS 安装包（含宠物资源）
+#   ClaudePet-<version>-x64-portable.zip 便携版（解压即用，含 exe + pet/）
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js 20 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: node node_modules/typescript/bin/tsc --noEmit
+
+      - name: Rust check
+        run: cargo check
+
+  build:
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    needs: lint
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js 20 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app (release)
+        run: pnpm tauri build --ci
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Verify embedded frontend (custom-protocol guard)
+        shell: pwsh
+        run: |
+          # Guard against a regression where the build step is changed to a
+          # bare `cargo build` (no custom-protocol feature): such an exe falls
+          # back to devUrl http://localhost:65173 and shows "connection
+          # refused" when double-clicked. The embedded dist JS chunk must be
+          # present inside the binary.
+          $exe = "src-tauri/target/release/claude-pet.exe"
+          if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -notmatch 'index-[A-Za-z0-9_-]+\.js') {
+            throw "dist not embedded in exe — build likely ran without custom-protocol feature (pnpm tauri build adds it automatically). Pet windows would fail with 'localhost connection refused'."
+          }
+          Write-Host "OK: dist embedded in exe"
+
+      - name: Locate artifacts
+        id: artifacts
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+          # NSIS installer
+          $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1 -ExpandProperty FullName
+          echo "nsis=$nsis" >> $env:GITHUB_OUTPUT
+
+          # Release exe
+          $exe = "src-tauri/target/release/claude-pet.exe"
+          echo "exe=$exe" >> $env:GITHUB_OUTPUT
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.artifacts.outputs.version }}"
+          $zipName = "ClaudePet-$version-x64-portable.zip"
+          $zipPath = "src-tauri/target/release/$zipName"
+
+          # Build the zip manifest filter for exe + pet/ dir.
+          # We need to add the pet/ folder content while preserving the directory
+          # layout: unzip → claude-pet.exe + pet/<id>/* next to each other.
+          $tmpDir = "${{ runner.temp }}/portable"
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+          Copy-Item src-tauri/target/release/claude-pet.exe $tmpDir
+          Copy-Item -Recurse pet $tmpDir
+
+          Compress-Archive -Path "$tmpDir/*" -DestinationPath $zipPath -Force
+          echo "portable=$zipPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload NSIS installer (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudePet-${{ steps.artifacts.outputs.version }}-nsis
+          path: ${{ steps.artifacts.outputs.nsis }}
+
+      - name: Upload portable zip (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudePet-${{ steps.artifacts.outputs.version }}-portable
+          path: ${{ steps.artifacts.outputs.portable }}
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ClaudePet ${{ steps.artifacts.outputs.version }}
+          body: |
+            ## ClaudePet ${{ steps.artifacts.outputs.version }}
+
+            ### 下载
+
+            - **安装包**（推荐）：`ClaudePet-${{ steps.artifacts.outputs.version }}-x64-setup.exe`
+              双击安装，自动注册文件关联，包含完整宠物资源。
+
+            - **便携版**：`ClaudePet-${{ steps.artifacts.outputs.version }}-x64-portable.zip`
+              解压即用，无需安装。内含 `claude-pet.exe` + `pet/` 目录。
+
+            ### 使用说明
+
+            1. 解压或安装后，双击 `claude-pet.exe` 启动桌宠
+            2. 右键系统托盘图标 → 「集成到 Claude Code(全局)」
+            3. 开一个新的 Claude Code 会话，宠物窗口自动出现
+
+            详细文档见项目 README。
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.artifacts.outputs.nsis }}
+            ${{ steps.artifacts.outputs.portable }}
