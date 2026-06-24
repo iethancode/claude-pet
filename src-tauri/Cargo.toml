@@ -1,6 +1,6 @@
 [package]
 name = "claude-pet"
-version = "0.1.0"
+version = "0.1.1"
 description = "ClaudePet — Claude Code desktop pet, Rust + Tauri rewrite"
 edition = { workspace = true }
 license = { workspace = true }

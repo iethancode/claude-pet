@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct GitInfo {
     pub is_repo: bool,
     #[serde(default)]

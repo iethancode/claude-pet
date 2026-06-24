@@ -390,6 +390,7 @@ pub fn build_session_meta_from_hook(raw: &Value, meta: Option<&TranscriptMeta>) 
             "sessionCacheCreation": s_cc,
             "sessionCacheRead": s_cr,
         },
+        "git": get_git_info(Path::new(&cwd)),
         "context": {
             "usedPercentage": used_percentage,
             "remainingPercentage": 100.0 - used_percentage,
